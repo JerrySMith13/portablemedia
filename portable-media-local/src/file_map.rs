@@ -1,4 +1,9 @@
-use std::{fs::{self, read_dir}, io::{Error, ErrorKind}, num::NonZeroUsize, os::unix::fs::MetadataExt};
+use std::{collections::HashMap, fs::{self, read_dir}, 
+    io::{Error, ErrorKind}, 
+    num::NonZeroUsize, 
+    os::unix::fs::MetadataExt,
+    sync::Arc
+};
 
 use lru::LruCache;
 
@@ -7,7 +12,7 @@ use crate::log::{self, log_err};
 pub struct FileNode{
     pub name: String,
     pub size: u64,
-    pub children: Option<Vec<FileNode>>,
+    pub children: Option<HashMap<String, Arc<FileNode>>>,
 }
 
 impl FileNode{
@@ -21,7 +26,7 @@ impl FileNode{
             Some(s) => s.to_string(),
             None => return Err(Error::new(ErrorKind::Other, format!("Error in trying to assign name to file {}", path)))
         };
-        let children: Option<Vec<FileNode>>;
+        let children: Option<HashMap<String, Arc<FileNode>>>;
         
 
         if metadata.is_symlink(){
@@ -37,7 +42,7 @@ impl FileNode{
         else{
             //Safe unwrap because we know for a fact it's a directory, nothing about the file state can change
             let directory = read_dir(path).unwrap();
-            let mut children_vec = Vec::with_capacity(directory.size_hint().0);
+            let mut children_map: HashMap<String, Arc<FileNode>> = HashMap::with_capacity(directory.size_hint().0);
             for file in directory{
                 if file.is_err(){
                     log_err(
@@ -52,9 +57,10 @@ impl FileNode{
                         log::LogPriority::Middle);
                     continue;
                 }
-                children_vec.push(FileNode::build_from_path(format!("{}/{}", path, file_name.unwrap()).as_str())?);
+                let file_name = file_name.unwrap();
+                children_map.insert(file_name.clone(), Arc::new(FileNode::build_from_path(format!("{}/{}", path, file_name).as_str())?));
             }
-            children = Some(children_vec);
+            children = Some(children_map);
 
         }
         return Ok(FileNode{
@@ -93,5 +99,5 @@ impl FileMap {
 
 #[cfg(test)]
 mod tests{
-
+    
 }
