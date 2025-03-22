@@ -90,3 +90,8 @@ impl FileMap {
 
     }
 }
+
+#[cfg(test)]
+mod tests{
+
+}
