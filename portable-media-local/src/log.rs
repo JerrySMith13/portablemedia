@@ -15,3 +15,8 @@ pub fn log(message: &str, priority: LogPriority){
 pub fn log_err(message: &str, priority: LogPriority){
 
 }
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+}
