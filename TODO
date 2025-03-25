@@ -1,3 +1,1 @@
-- Implement LRU, use algorithm to get default value for max
-
-- Work on config files with options
+- Need to use RwLock/RefCell or something for file nodes so that I can easily pop some from the tree (make the children members rwlocked?)
