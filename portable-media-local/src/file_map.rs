@@ -6,9 +6,15 @@ use std::{
     os::unix::fs::MetadataExt,
     sync::{Arc, Mutex},
 };
-type DirMap = HashMap<String, Arc<FileNode>>;
+
+use tokio::{
+    sync::RwLock as TokioLock,
+};
+type DirMap = TokioLock<HashMap<String, Arc<FileNode>>>;
+
 use lru::LruCache;
 use tokio::io::AsyncReadExt;
+use async_recursion::async_recursion;
 
 use crate::log::{self, log_err};
 
@@ -19,7 +25,8 @@ pub struct FileNode {
 }
 
 impl FileNode {
-    fn build_from_path(path: &str) -> Result<FileNode, Error> {
+    #[async_recursion]
+    async fn build_from_path(path: &str) -> Result<FileNode, Error> {
         let file = fs::File::open(path)?;
         let metadata = file.metadata()?;
 
@@ -50,7 +57,7 @@ impl FileNode {
         } else {
             //Safe unwrap because we know for a fact it's a directory, nothing about the file state can change
             let directory = read_dir(path).unwrap();
-            let mut children_map: DirMap = HashMap::with_capacity(directory.size_hint().0);
+            let mut children_map: DirMap = TokioLock::new(HashMap::with_capacity(directory.size_hint().0));
             for file in directory {
                 if file.is_err() {
                     log_err(
@@ -77,11 +84,12 @@ impl FileNode {
                     continue;
                 }
                 let file_name = file_name.unwrap();
+                let mut children_map = children_map.write().await;
                 children_map.insert(
                     file_name.clone(),
                     Arc::new(FileNode::build_from_path(
                         format!("{}/{}", path, file_name).as_str(),
-                    )?),
+                    ).await?),
                 );
             }
             children = Some(children_map);
@@ -101,7 +109,7 @@ pub struct FileMap {
 }
 
 impl FileMap {
-    pub fn from_root_dir(root_dir: &str) -> Result<FileMap, Error> {
+    pub async fn from_root_dir(root_dir: &str) -> Result<FileMap, Error> {
         let file = fs::File::open(root_dir)?;
         let metadata = file.metadata()?;
 
@@ -112,7 +120,7 @@ impl FileMap {
             ));
         }
 
-        let head = Arc::new(FileNode::build_from_path(root_dir)?);
+        let head = Arc::new(FileNode::build_from_path(root_dir).await?);
 
         Ok(FileMap {
             FULL_ROOT_PATH: root_dir.to_string(),
@@ -125,13 +133,14 @@ impl FileMap {
     /// Returns a reference to the file node in the map for the given path
     /// Returns an `Arc<FileNode>` if the file is found, otherwise returns an `io::Error`
     /// Passing "" to this function will return a reference to the root node
-    fn get_file_ref(&self, path: &str) -> Result<Arc<FileNode>, io::Error> {
+    async fn get_file_ref(&self, path: &str) -> Result<Arc<FileNode>, io::Error> {
         let path_split: Vec<&str> = path.split('/').collect();
         let mut current_node: Arc<FileNode> = self.head.clone();
         if path_split.len() > 1 {
             for i in 0..path_split.len() {
-                if let Some(ref children) = current_node.children {
-                    if let Some(z) = children.get(path_split[i]) {
+                let current_node_clone = current_node.clone();
+                if let Some(ref children) = current_node_clone.children {
+                    if let Some(z) = children.read().await.get(path_split[i]) {
                         current_node = z.clone();
                     } else {
                         return Err(io::Error::new(
@@ -164,7 +173,7 @@ impl FileMap {
         let file = tokio::fs::File::open(format!("{}/{}", self.FULL_ROOT_PATH, path));
         
         // Check if the file exists in the map
-        let r = self.get_file_ref(path)?;
+        let r = self.get_file_ref(path).await?;
 
         let mut buf: Vec<u8> = Vec::with_capacity(r.size as usize);
 
@@ -209,24 +218,24 @@ mod tests {
     use super::*;
 
     const TEST_DIR_PATH: &str = "../test_dir";
-    #[test]
-    fn test_working_dir() {
-        let file_map = FileMap::from_root_dir(TEST_DIR_PATH).unwrap();
+    #[tokio::test]
+    async fn test_working_dir() {
+        let file_map = FileMap::from_root_dir(TEST_DIR_PATH).await.unwrap();
         assert_eq!(file_map.head.name, "test_dir");
         assert_eq!(file_map.head.size, 0);
         assert!(file_map.head.children.is_some());
-        let children = file_map.head.children.as_ref().unwrap();
+        let children = file_map.head.children.as_ref().unwrap().read().await;
         assert_eq!(children.len(), 3); // test_dir has 3 children
         println!("Children: {:?}", children.keys().collect::<Vec<&String>>());
         assert!(children.contains_key("testfile1.txt"));
         assert!(children.contains_key("testfile2.mp4"));
         assert!(children.contains_key("test2"));
-        assert_eq!(file_map.get_file_ref("").unwrap().name, file_map.head.name);
+        assert_eq!(file_map.get_file_ref("").await.unwrap().name, file_map.head.name);
     }
 
     #[tokio::test]
     async fn test_file_reading() {
-        let file_map = FileMap::from_root_dir(TEST_DIR_PATH).unwrap();
+        let file_map = FileMap::from_root_dir(TEST_DIR_PATH).await.unwrap();
         let file = file_map.get_file("testfile1.txt").await.unwrap();
         assert_eq!(file.len(), 13); // test_file.txt has 13 bytes
     }
