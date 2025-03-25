@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 lru = "0.13.0"
+tokio = {version="1.44.1", features=["full"]}
